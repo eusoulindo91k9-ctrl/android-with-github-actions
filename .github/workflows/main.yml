@@ -1,0 +1,59 @@
+name: Android Host Online
+on: 
+  workflow_dispatch: # Inicia manualmente
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Instalar KVM e Dependências
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
+          # Verifica se o KVM está disponível para acelerar o Android
+          sudo adduser $USER libvirt
+          sudo adduser $USER kvm
+
+      - name: Configurar Ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update && sudo apt-get install ngrok
+          ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+
+      - name: Rodar Android 10 (Docker)
+        run: |
+          # Rodando container com Android 10 + NoVNC (Interface Web)
+          # Usaremos a imagem budtmo/docker-android que já vem com tudo pronto
+          docker run -d -p 6080:6080 -p 5554:5554 -p 5555:5555 \
+          --device /dev/kvm \
+          --name android-container \
+          budtmo/docker-android:emulator_10.0
+
+      - name: Iniciar Tunnel Ngrok
+        id: ngrok_step
+        run: |
+          # Abre o túnel na porta 6080 (onde o site do android roda)
+          ngrok http 6080 --log=stdout > /dev/null &
+          sleep 10
+          # Captura a URL gerada
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          echo "URL_ANDROID=$NGROK_URL" >> $GITHUB_ENV
+          echo "A URL gerada é: $NGROK_URL"
+
+      - name: Enviar Notificação com Link
+        run: |
+          # Exemplo usando Webhook do Discord
+          curl -H "Content-Type: application/json" \
+          -X POST \
+          -d "{\"content\": \"🚀 **Android 10 Online!**\n🔗 Link: ${{ env.URL_ANDROID }}\n📱 Porta ADB: 5555\n⚡ Ping: Estável via Ngrok\"}" \
+          ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: Manter Action Viva
+        run: |
+          echo "Android rodando... Não feche esta aba no GitHub Actions."
+          # Mantém o workflow rodando por 6 horas (limite do GitHub)
+          sleep 21600
