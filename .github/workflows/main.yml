@@ -1,81 +1,73 @@
-name: Android 10 Ultra Fast
+name: Android Web Host Otimizado
 on: 
   workflow_dispatch:
 
 jobs:
-  android:
+  run-emulator:
     runs-on: ubuntu-latest
     steps:
-      - name: Preparar Kernel para Android (BinderFS)
+      - name: Liberar Espaço e Habilitar KVM
         run: |
-          # Em vez de modprobe, usamos o binderfs que já vem no kernel 6.x
-          sudo mkdir -p /dev/binderfs
-          sudo mount -t binder binder /dev/binderfs
-          
-          # Criar links para o Redroid encontrar os drivers
-          sudo ln -s /dev/binderfs/binder /dev/binder
-          sudo ln -s /dev/binderfs/hwbinder /dev/hwbinder
-          sudo ln -s /dev/binderfs/vndbinder /dev/vndbinder
-          sudo chmod 777 /dev/binder /dev/hwbinder /dev/vndbinder
+          # Aceleração de Hardware é essencial para não demorar horas
+          sudo apt-get update
+          sudo apt-get install -y qemu-kvm
+          sudo chmod 666 /dev/kvm
 
-      - name: Iniciar Redroid (Android 10)
+      - name: Iniciar Android 10 (Versão Otimizada)
         run: |
-          # Rodando em modo privilegiado para ter performance total
-          docker run -d --privileged \
-            --name redroid \
-            -v ~/data:/data \
-            -p 5555:5555 \
-            redroid/redroid:10.0.0-latest \
-            androidboot.redroid_width=720 \
-            androidboot.redroid_height=1280 \
-            androidboot.redroid_dpi=320 \
-            androidboot.redroid_fps=30
+          # Usando a imagem do budtmo que é a mais estável para Web
+          # Configuramos 2 CPUs e 4GB de RAM (limite do GitHub)
+          docker run -d -p 6080:6080 -p 5554:5554 -p 5555:5555 \
+            --device /dev/kvm \
+            --name android_container \
+            -e EMULATOR_DEVICE="Samsung Galaxy S10" \
+            -e WEB_VNC=true \
+            -e CORE=2 \
+            -e RAM=4096 \
+            budtmo/docker-android:emulator_10.0
 
-      - name: Iniciar Interface Web (scrcpy-web)
-        run: |
-          # Este container cria o site para você mexer no Android
-          docker run -d \
-            --name scrcpy-web \
-            --link redroid:listentarget \
-            -p 8000:8000 \
-            -e ADB_SERVER_IP=listentarget \
-            empof/ws-scrcpy
-
-      - name: Instalar e Configurar Ngrok
+      - name: Instalar Ngrok
         run: |
           curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
           echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
           sudo apt-get update && sudo apt-get install ngrok
           ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
 
-      - name: Aguardar Android e Abrir Túnel
+      - name: Aguardar Inicialização do Site
         run: |
-          # Aguarda o serviço web estar pronto para evitar o erro 3004 do Ngrok
-          echo "Aguardando inicialização do sistema..."
-          sleep 20
-          
-          # Inicia o Ngrok na porta do site (8000)
-          ngrok http 8000 --log=stdout > /dev/null &
+          echo "Aguardando o sistema preparar a interface web (Porta 6080)..."
+          # Verifica se a porta 6080 responde. Isso evita o erro 3004 do Ngrok.
+          timeout 300s bash -c 'until curl -s localhost:6080 > /dev/null; do sleep 5; done'
+          echo "Interface Web detectada!"
+
+      - name: Abrir Túnel e Enviar Link
+        run: |
+          # Abre o túnel
+          ngrok http 6080 --log=stdout > /dev/null &
           sleep 10
           
-          # Captura a URL pública
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          # Pega a URL
+          URL=$(curl -s http://localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
           
-          echo "---------------------------------------------------"
-          echo "📱 ANDROID 10 PRONTO PARA USO!"
-          echo "🔗 LINK: $NGROK_URL"
-          echo "---------------------------------------------------"
+          # Calcula o Ping do servidor para você ter uma base
+          PING_MS=$(ping -c 3 8.8.8.8 | tail -1 | awk '{print $4}' | cut -d '/' -f 2)
+          
+          echo "------------------------------------------------"
+          echo "📱 ANDROID 10 ONLINE"
+          echo "🔗 LINK: $URL"
+          echo "⚡ PING DO SERVIDOR: ${PING_MS}ms"
+          echo "------------------------------------------------"
           
           if [ ! -z "${{ secrets.DISCORD_WEBHOOK }}" ]; then
             curl -H "Content-Type: application/json" -X POST \
-            -d "{\"content\": \"🚀 **Android 10 Online!**\n🔗 Link: $NGROK_URL\n⚡ Performance: Redroid Otimizado\"}" \
+            -d "{\"content\": \"🚀 **Android 10 Online!**\n🔗 Link: $URL\n⚡ Ping Servidor: ${PING_MS}ms\n\n*Nota: O primeiro boot demora uns 3-5 min até a tela sair do logo Android.*\"}" \
             ${{ secrets.DISCORD_WEBHOOK }}
           fi
 
-      - name: Manter Vivo e Mostrar Ping
+      - name: Manter Ativo
         run: |
-          # Loop para mostrar que está vivo e monitorar o ping
+          # Mantém o log atualizando com o ping para a Action não fechar por inatividade
           while true; do
-            echo "Status: Online | Ping Google: $(ping -c 1 8.8.8.8 | grep 'time=' | awk '{print $7}')"
+            echo "Mantendo conexão ativa... Ping atual: $(ping -c 1 google.com | grep 'time=' | awk '{print $7}')"
             sleep 60
           done
